@@ -1,0 +1,27 @@
+# Introduction
+
+So fail0verflow released a writeup today on the namedobj exploit. I and a few others have had this exploit for some time but did not release as we received help indirectly from f0f, so it was not entirely ours to release. Now that it is out however, I'd like to talk about it as it is a really interesting exploit. Below is not going to be a full write-up, but more of a framework or strategy that those who are interested can use to try to implement this kernel exploit. In due time I will release my implementation after I've edited non-burned components out of the exploit.
+
+# The Bug
+So the bug is essentially type confusion with the 'kind' field of the 'id_entry' object used in named objects. Named objects are objects that have properties associated to them (such as a name as you might have guessed), that points to the real object in the heap. By specifying a type 0x5000 for your object, you can cause type confusion.
+
+You now need to find another area of the kernel that can abuse to corrupt your object. Luckily, there is sys_mdbg_service(). This will allow you to overwrite the lower 32-bits of a pointer that you can later free() with sys_namedobj_delete(). This allows you to create a use-after-free situation that you can use to obtain code execution by spraying fake objects on the heap and corrupting a function pointer.
+
+# Strategy
+A good strategy for exploiting this bug is as follows:
+1. Leak a target object from the kernel heap that not only has function pointers you can corrupt, but ideally is also easy to fake to avoid crashing the kernel.
+2. Create type confusion via sys_namedobj_create() with the 0x5000 (or 0x4000 due to the bitwise OR) flag.
+3. Setup a kernel ROP chain in userland. Ideally in this ROP chain you want to disable kernel write protection, make desired patches (such as RWX memory mapping), and pivot to return to userland successfully.
+3. Overwrite the lower 32-bits in your object with sys_mdbg_service() with the lower-32 bits of your target object's address. We cannot overwrite upper 32-bits, however luckily the pointer stored here before was a heap pointer anyway, so the upper 32-bits will be set to FreeBSD's heap address prefix (0xFFFFYYYYxxxxxxxx where YYYY is randomized by ASLR at boot).
+4. Trigger the free() via sys_namedobj_delete()
+5. Spray your fake object on the heap with a function pointer pointing to your kROP chain created earlier
+6. Find a function that uses the object you corrupted and trigger the function pointer to be read
+7. You now have code execution, and your kROP chain is running in ring0! Yay!
+8. Fix your free()'d object because if you don't, as soon as webkit exits, kernel will crash because it will try to free() your object again and lead to a double free().
+9. Return to userland successfully.
+
+# Notes
+* You must fix what your exploit did in your kernel ROP chain or a double free() will occur when you exit WebKit, causing a kernel panic.
+* You must make your kernel ROP chain return to userland successfully, or the kernel will crash when your kROP chain is finished executing.
+* Finding an object to leak and exploit blind is VERY difficult. This was the head bashing part for me.
+* I will release an implementation soon but until then, try to implement it yourself and see how far you go, it's a great learning experience! Have fun!
